@@ -1,27 +1,44 @@
+# CUDA 12.1 runtime (works well with prebuilt PyTorch wheels)
 FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
 
-# OS deps
-RUN apt-get update && apt-get install -y python3-pip git ffmpeg && rm -rf /var/lib/apt/lists/*
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 
-# Python
-RUN python3 -m pip install --upgrade pip
+# System deps commonly required by wheels
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-pip python3-dev build-essential pkg-config \
+    git ffmpeg \
+    libgl1 libglib2.0-0 \
+ && rm -rf /var/lib/apt/lists/*
 
-# Clone WAN 2.2
+RUN python3 -m pip install --upgrade pip setuptools wheel
+
 WORKDIR /workspace
-RUN git clone https://github.com/Wan-Video/Wan2.2.git
-WORKDIR /workspace/Wan2.2
+COPY . /workspace
 
-# Install WAN deps (WAN repo requires torch>=2.4; it will be pulled via requirements.txt)
-RUN pip install -r requirements.txt
+# ---- Install CUDA-matched PyTorch first (prebuilt, no compiling) ----
+# Remove torch/torchvision/torchaudio from requirements.txt (next step),
+# or keep them UNPINNED if you really must leave them.
+RUN python3 -m pip install --index-url https://download.pytorch.org/whl/cu121 \
+    torch torchvision torchaudio
 
-# Serverless + storage helpers
-RUN pip install runpod boto3 Pillow "huggingface_hub[cli]"
+# ---- Make requirements more CI-friendly ----
+# Swap GUI OpenCV -> headless (prevents lib errors on servers)
+RUN if grep -qi "^opencv-python" requirements.txt; then \
+      sed -i 's/^opencv-python.*/opencv-python-headless/gI' requirements.txt ; \
+    fi
+# If you used any of these and don’t absolutely need them, comment them out in requirements.txt:
+# xformers / flash-attn / bitsandbytes / triton
 
-# (Optional) Pre-download TI2V-5B weights. You can also mount a volume or download at runtime.
-# Uncomment the next line if you want to bake weights into the image (large!).
-# RUN huggingface-cli download Wan-AI/Wan2.2-TI2V-5B --local-dir ./Wan2.2-TI2V-5B
+# ---- Install the rest of your deps ----
+# First try fast (no deps), fallback with full resolver if needed.
+RUN python3 -m pip install --no-deps -r requirements.txt || \
+    (echo "Retrying with deps…" && python3 -m pip install -r requirements.txt)
 
-# Worker code
-COPY handler.py /workspace/handler.py
+# Worker runtime deps (safe)
+RUN python3 -m pip install runpod boto3 Pillow "huggingface_hub[cli]"
 
+# Start your worker
 CMD ["python3", "/workspace/handler.py"]
