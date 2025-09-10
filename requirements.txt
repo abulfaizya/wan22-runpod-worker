@@ -1,0 +1,11 @@
+accelerate
+transformers
+diffusers
+safetensors
+numpy
+scipy
+Pillow
+tqdm
+opencv-python-headless
+huggingface-hub
+boto3
